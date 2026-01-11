@@ -1,142 +1,196 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-
 import { Low } from "lowdb";
 import { JSONFile } from "lowdb/node";
-import { nanoid } from "nanoid";
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const PORT = process.env.PORT || 10000;
 
-// ✅ Fix __dirname in ES Module
+/* -------------------- Fix __dirname (ESM) -------------------- */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ==============================
-// ✅ lowdb setup
-// ==============================
-const adapter = new JSONFile(path.join(__dirname, "db.json"));
-const db = new Low(adapter, {
-  menu: [],
-  bills: []
-});
+/* -------------------- LowDB setup -------------------- */
+const dbFile = path.join(__dirname, "db.json");
+const adapter = new JSONFile(dbFile);
+const db = new Low(adapter, { menu: [], bills: [] });
 
 await db.read();
+db.data ||= { menu: [], bills: [] };
 await db.write();
 
-// ==============================
-// ✅ Uploads folder (images)
-// ==============================
-const uploadsDir = path.join(__dirname, "uploads");
+/* -------------------- Middleware -------------------- */
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
+/* -------------------- Upload folder setup -------------------- */
+const uploadDir = path.join(process.cwd(), "uploads");
+
+// Create uploads folder automatically (VERY IMPORTANT for Render)
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Make uploads accessible in browser
+app.use("/uploads", express.static(uploadDir));
+
+/* -------------------- Multer setup -------------------- */
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, uploadsDir);
+    cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    cb(null, Date.now() + "_" + file.originalname.replace(/\s+/g, "_"));
-  }
+    const ext = path.extname(file.originalname);
+    cb(null, Date.now() + "-" + Math.round(Math.random() * 1e9) + ext);
+  },
 });
 
 const upload = multer({ storage });
 
-// Serve images
-app.use("/uploads", express.static(uploadsDir));
+/* -------------------- HEALTH CHECK -------------------- */
+app.get("/", (req, res) => {
+  res.send("✅ Restaurant backend is running");
+});
 
-// ==============================
-// ✅ MENU APIs
-// ==============================
+/* ============================================================
+   ✅ MENU APIs
+============================================================ */
 
-// Get menu items
+// ✅ GET Menu items
 app.get("/api/menu", async (req, res) => {
   await db.read();
-  res.json(db.data.menu);
+  res.json(db.data.menu || []);
 });
 
-// Add menu item (with image upload)
+// ✅ POST save menu item with image
 app.post("/api/menu", upload.single("image"), async (req, res) => {
-  const { name, price } = req.body;
+  try {
+    const { name, price } = req.body;
 
-  if (!name || !price) {
-    return res.status(400).json({ message: "name and price required" });
+    if (!name || !price) {
+      return res.status(400).json({ message: "Name and Price required" });
+    }
+
+    await db.read();
+
+    const newItem = {
+      id: Date.now(),
+      name: name.trim(),
+      price: Number(price),
+      image: req.file ? `/uploads/${req.file.filename}` : "",
+    };
+
+    db.data.menu.push(newItem);
+    await db.write();
+
+    res.json({ message: "Item saved", item: newItem });
+  } catch (err) {
+    console.log("SAVE ITEM ERROR:", err);
+    res.status(500).json({ message: err.message });
   }
-
-  const item = {
-    id: nanoid(),
-    name: name.trim(),
-    price: Number(price),
-    image: req.file ? req.file.filename : null
-  };
-
-  await db.read();
-  db.data.menu.push(item);
-  await db.write();
-
-  res.json(item);
 });
 
-// ==============================
-// ✅ BILL APIs
-// ==============================
+// ✅ DELETE menu item
+app.delete("/api/menu/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
 
-// Save bill
+    await db.read();
+    db.data.menu = db.data.menu.filter((x) => x.id !== id);
+    await db.write();
+
+    res.json({ message: "Item deleted" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/* ============================================================
+   ✅ BILL / INVOICE APIs
+============================================================ */
+
+// ✅ POST create bill (returns invoiceId)
 app.post("/api/bill", async (req, res) => {
-  const { mobile, items, total } = req.body;
+  try {
+    const { mobile, items, total } = req.body;
 
-  if (!mobile || !items || !Array.isArray(items)) {
-    return res.status(400).json({ message: "Invalid bill data" });
+    if (!mobile || !items || items.length === 0) {
+      return res.status(400).json({ message: "Mobile and items required" });
+    }
+
+    await db.read();
+
+    const invoice = {
+      id: Date.now(), // invoiceId
+      mobile,
+      items,
+      total: Number(total || 0),
+      date: new Date().toISOString(),
+    };
+
+    db.data.bills.push(invoice);
+    await db.write();
+
+    res.json({
+      message: "Bill created",
+      invoiceId: invoice.id,
+    });
+  } catch (err) {
+    console.log("BILL ERROR:", err);
+    res.status(500).json({ message: err.message });
   }
-
-  const invoiceId = "INV" + Date.now();
-
-  const bill = {
-    id: nanoid(),
-    invoiceId,
-    mobile,
-    items,
-    total: Number(total || 0),
-    date: new Date().toISOString()
-  };
-
-  await db.read();
-  db.data.bills.push(bill);
-  await db.write();
-
-  res.json({ ok: true, invoiceId });
 });
-app.get("/invoice/:invoiceId", async (req, res) => {
-  const { invoiceId } = req.params;
 
-  await db.read();
-  const bill = db.data.bills.find(b => b.invoiceId === invoiceId);
+// ✅ GET invoice by ID
+app.get("/api/invoice/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
 
-  if (!bill) return res.status(404).json({ message: "Invoice not found" });
+    await db.read();
+    const invoice = db.data.bills.find((b) => b.id === id);
 
-  res.json(bill);
+    if (!invoice) {
+      return res.status(404).json({ message: "Invoice not found" });
+    }
+
+    res.json(invoice);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
-app.get("/", (req, res) => {
-res.send("Restaurant Backend API Running");
-});
-// Daily report (today only)
+
+/* ============================================================
+   ✅ REPORT API
+============================================================ */
+
+// ✅ GET daily report by date
+// Example: /api/report?date=2026-01-11
 app.get("/api/report", async (req, res) => {
-  await db.read();
+  try {
+    const { date } = req.query;
 
-  // date comes from query like: /report?date=2026-01-10
-  const selectedDate =
-    req.query.date || new Date().toISOString().slice(0, 10);
+    await db.read();
+    const bills = db.data.bills || [];
 
-  const result = db.data.bills.filter(b =>
-    (b.date || "").startsWith(selectedDate)
-  );
+    if (!date) return res.json(bills);
 
-  res.json(result);
+    const filtered = bills.filter((b) => {
+      const billDate = (b.date || "").slice(0, 10);
+      return billDate === date;
+    });
+
+    res.json(filtered);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
-// ==============================
-// ✅ Start server
-// ==============================
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log("Running on " + PORT));
+
+/* -------------------- Start server -------------------- */
+app.listen(PORT, () => {
+  console.log(`✅ Backend running on port ${PORT}`);
+});
