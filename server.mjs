@@ -52,13 +52,13 @@ app.use("/uploads", express.static(uploadsDir));
 // ==============================
 
 // Get menu items
-app.get("/menu", async (req, res) => {
+app.get("/api/menu", async (req, res) => {
   await db.read();
   res.json(db.data.menu);
 });
 
 // Add menu item (with image upload)
-app.post("/menu", upload.single("image"), async (req, res) => {
+app.post("/api/menu", upload.single("image"), async (req, res) => {
   const { name, price } = req.body;
 
   if (!name || !price) {
@@ -84,7 +84,7 @@ app.post("/menu", upload.single("image"), async (req, res) => {
 // ==============================
 
 // Save bill
-app.post("/bill", async (req, res) => {
+app.post("/api/bill", async (req, res) => {
   const { mobile, items, total } = req.body;
 
   if (!mobile || !items || !Array.isArray(items)) {
@@ -118,8 +118,11 @@ app.get("/invoice/:invoiceId", async (req, res) => {
 
   res.json(bill);
 });
+app.get("/", (req, res) => {
+res.send("Restaurant Backend API Running");
+});
 // Daily report (today only)
-app.get("/report", async (req, res) => {
+app.get("/api/report", async (req, res) => {
   await db.read();
 
   // date comes from query like: /report?date=2026-01-10
