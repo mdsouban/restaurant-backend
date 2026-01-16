@@ -1,79 +1,72 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
-import fs from "fs";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
+
 import { Low } from "lowdb";
 import { JSONFile } from "lowdb/node";
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+app.use(cors());
+app.use(express.json());
 
-/* -------------------- Fix __dirname (ESM) -------------------- */
+// --------- FILE / PATH SETUP ----------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/* -------------------- LowDB setup -------------------- */
+const uploadsDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+app.use("/uploads", express.static(uploadsDir));
+
+// --------- DB SETUP ----------
 const dbFile = path.join(__dirname, "db.json");
 const adapter = new JSONFile(dbFile);
 const db = new Low(adapter, { menu: [], bills: [] });
 
-await db.read();
-db.data ||= { menu: [], bills: [] };
-await db.write();
-
-/* -------------------- Middleware -------------------- */
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-/* -------------------- Upload folder setup -------------------- */
-const uploadDir = path.join(process.cwd(), "uploads");
-
-// Create uploads folder automatically (VERY IMPORTANT for Render)
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+async function initDb() {
+  await db.read();
+  db.data ||= { menu: [], bills: [] };
+  db.data.menu ||= [];
+  db.data.bills ||= [];
+  await db.write();
 }
+await initDb();
 
-// Make uploads accessible in browser
-app.use("/uploads", express.static(uploadDir));
-
-/* -------------------- Multer setup -------------------- */
+// --------- MULTER (IMAGE UPLOAD) ----------
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, uploadDir);
+    cb(null, uploadsDir);
   },
   filename: function (req, file, cb) {
+    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
     const ext = path.extname(file.originalname);
-    cb(null, Date.now() + "-" + Math.round(Math.random() * 1e9) + ext);
+    cb(null, unique + ext);
   },
 });
 
 const upload = multer({ storage });
 
-/* -------------------- HEALTH CHECK -------------------- */
+// ✅ Health check
 app.get("/", (req, res) => {
-  res.send("✅ Restaurant backend is running");
+  res.send("Restaurant POS Backend is running ✅");
 });
 
-/* ============================================================
-   ✅ MENU APIs
-============================================================ */
-
-// ✅ GET Menu items
+// ✅ GET menu items
 app.get("/api/menu", async (req, res) => {
   await db.read();
-  res.json(db.data.menu || []);
+  res.json(db.data.menu);
 });
 
-// ✅ POST save menu item with image
+// ✅ POST add menu item (with optional image)
 app.post("/api/menu", upload.single("image"), async (req, res) => {
   try {
     const { name, price } = req.body;
 
     if (!name || !price) {
-      return res.status(400).json({ message: "Name and Price required" });
+      return res.status(400).json({ message: "Name and price are required" });
     }
 
     await db.read();
@@ -82,7 +75,8 @@ app.post("/api/menu", upload.single("image"), async (req, res) => {
       id: Date.now(),
       name: name.trim(),
       price: Number(price),
-      image: req.file ? `/uploads/${req.file.filename}` : "",
+      imageUrl: req.file ? `/uploads/${req.file.filename}` : "",
+      createdAt: new Date().toISOString(),
     };
 
     db.data.menu.push(newItem);
@@ -90,7 +84,7 @@ app.post("/api/menu", upload.single("image"), async (req, res) => {
 
     res.json({ message: "Item saved", item: newItem });
   } catch (err) {
-    console.log("SAVE ITEM ERROR:", err);
+    console.log("MENU SAVE ERROR:", err);
     res.status(500).json({ message: err.message });
   }
 });
@@ -106,13 +100,10 @@ app.delete("/api/menu/:id", async (req, res) => {
 
     res.json({ message: "Item deleted" });
   } catch (err) {
+    console.log("DELETE MENU ERROR:", err);
     res.status(500).json({ message: err.message });
   }
 });
-
-/* ============================================================
-   ✅ BILL / INVOICE APIs
-============================================================ */
 
 // ✅ POST create bill (returns invoiceId)
 app.post("/api/bill", async (req, res) => {
@@ -146,51 +137,47 @@ app.post("/api/bill", async (req, res) => {
   }
 });
 
-// ✅ GET invoice by ID
-app.get("/api/invoice/:id", async (req, res) => {
+// ✅ GET invoice by id
+app.get("/api/bill/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
 
     await db.read();
-    const invoice = db.data.bills.find((b) => b.id === id);
 
-    if (!invoice) {
+    const bill = db.data.bills.find(b => b.id === id);
+
+    if (!bill) {
       return res.status(404).json({ message: "Invoice not found" });
     }
 
-    res.json(invoice);
+    res.json(bill);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
-
-/* ============================================================
-   ✅ REPORT API
-============================================================ */
-
-// ✅ GET daily report by date
-// Example: /api/report?date=2026-01-11
+// ✅ Report by date (YYYY-MM-DD)
 app.get("/api/report", async (req, res) => {
   try {
-    const { date } = req.query;
+    const { date } = req.query; // 2026-01-12
 
     await db.read();
-    const bills = db.data.bills || [];
+    let bills = db.data.bills;
 
-    if (!date) return res.json(bills);
+    if (date) {
+      bills = bills.filter((b) => (b.date || "").startsWith(date));
+    }
 
-    const filtered = bills.filter((b) => {
-      const billDate = (b.date || "").slice(0, 10);
-      return billDate === date;
-    });
+    const totalSales = bills.reduce((sum, b) => sum + Number(b.total || 0), 0);
 
-    res.json(filtered);
+    res.json({ bills, totalSales });
   } catch (err) {
+    console.log("REPORT ERROR:", err);
     res.status(500).json({ message: err.message });
   }
 });
 
-/* -------------------- Start server -------------------- */
+// --------- START SERVER ----------
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`✅ Backend running on port ${PORT}`);
+  console.log("✅ Backend running on port", PORT);
 });
