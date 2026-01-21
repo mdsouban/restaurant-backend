@@ -1,124 +1,182 @@
 import express from "express";
 import cors from "cors";
-import multer from "multer";
-import path from "path";
-import fs from "fs";
+import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import { Low } from "lowdb";
 import { JSONFile } from "lowdb/node";
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 
-// --------- FILE / PATH SETUP ----------
+// --------------------
+// ✅ CORS Setup
+// --------------------
+const allowedOrigins = [
+  "http://localhost:5175",
+  "http://localhost:5174",
+  "http://localhost:5173",
+
+  // Termux network host (your local mobile/PC)
+  "http://192.0.0.2:5175",
+  "http://192.0.0.2:5174",
+  "http://192.0.0.2:5173",
+
+  "http://10.188.65.73:5175",
+  "http://10.188.65.73:5174",
+  "http://10.188.65.73:5173",
+
+  // ✅ Vercel frontend (your deployed url)
+  "https://restaurant-frontend-five-snowy.vercel.app",
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // allow no-origin requests (Postman / curl / browser direct open)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+
+      return callback(new Error("Not allowed by CORS: " + origin));
+    },
+    credentials: true,
+  })
+);
+
+app.options("*", cors());
+
+// --------------------
+// ✅ LowDB setup
+// --------------------
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = dirname(__filename);
 
-const uploadsDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
-app.use("/uploads", express.static(uploadsDir));
-
-// --------- DB SETUP ----------
-const dbFile = path.join(__dirname, "db.json");
+const dbFile = join(__dirname, "db.json");
 const adapter = new JSONFile(dbFile);
-const db = new Low(adapter, { menu: [], bills: [] });
+const db = new Low(adapter);
 
-async function initDb() {
+async function initDB() {
   await db.read();
-  db.data ||= { menu: [], bills: [] };
-  db.data.menu ||= [];
-  db.data.bills ||= [];
+  db.data ||= { menu: [], bills: [] }; // default tables
   await db.write();
 }
-await initDb();
 
-// --------- MULTER (IMAGE UPLOAD) ----------
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadsDir);
-  },
-  filename: function (req, file, cb) {
-    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname);
-    cb(null, unique + ext);
-  },
-});
+await initDB();
 
-const upload = multer({ storage });
-
+// --------------------
 // ✅ Health check
+// --------------------
 app.get("/", (req, res) => {
-  res.send("Restaurant POS Backend is running ✅");
+  res.send("Restaurant POS Backend running ✅");
 });
 
-// ✅ GET menu items
+// --------------------
+// ✅ GET Menu
+// --------------------
 app.get("/api/menu", async (req, res) => {
   await db.read();
-  res.json(db.data.menu);
+  res.json(db.data.menu || []);
 });
 
-// ✅ POST add menu item (with optional image)
-app.post("/api/menu", upload.single("image"), async (req, res) => {
+// --------------------
+// ✅ ADD Menu Item
+// --------------------
+app.post("/api/menu", async (req, res) => {
   try {
     const { name, price } = req.body;
 
-    if (!name || !price) {
-      return res.status(400).json({ message: "Name and price are required" });
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ message: "Name is required" });
+    }
+
+    const p = Number(price);
+    if (isNaN(p) || p <= 0) {
+      return res.status(400).json({ message: "Valid price is required" });
     }
 
     await db.read();
 
-    const newItem = {
+    const item = {
       id: Date.now(),
-      name: name.trim(),
-      price: Number(price),
-      imageUrl: req.file ? `/uploads/${req.file.filename}` : "",
-      createdAt: new Date().toISOString(),
+      name: String(name).trim(),
+      price: p,
     };
 
-    db.data.menu.push(newItem);
+    db.data.menu.push(item);
     await db.write();
 
-    res.json({ message: "Item saved", item: newItem });
+    res.json({ message: "Item saved", item });
   } catch (err) {
     console.log("MENU SAVE ERROR:", err);
     res.status(500).json({ message: err.message });
   }
 });
 
-// ✅ DELETE menu item
+// --------------------
+// ✅ UPDATE Menu Item
+// --------------------
+app.put("/api/menu/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { name, price } = req.body;
+
+    await db.read();
+
+    const idx = db.data.menu.findIndex((x) => Number(x.id) === id);
+    if (idx === -1) return res.status(404).json({ message: "Item not found" });
+
+    if (name !== undefined) db.data.menu[idx].name = String(name).trim();
+    if (price !== undefined) db.data.menu[idx].price = Number(price);
+
+    await db.write();
+
+    res.json({ message: "Item updated", item: db.data.menu[idx] });
+  } catch (err) {
+    console.log("MENU UPDATE ERROR:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// --------------------
+// ✅ DELETE Menu Item
+// --------------------
 app.delete("/api/menu/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
 
     await db.read();
-    db.data.menu = db.data.menu.filter((x) => x.id !== id);
-    await db.write();
+    db.data.menu = (db.data.menu || []).filter((x) => Number(x.id) !== id);
 
+    await db.write();
     res.json({ message: "Item deleted" });
   } catch (err) {
-    console.log("DELETE MENU ERROR:", err);
+    console.log("MENU DELETE ERROR:", err);
     res.status(500).json({ message: err.message });
   }
 });
 
-// ✅ POST create bill (returns invoiceId)
+// --------------------
+// ✅ CREATE BILL
+// returns invoiceId
+// --------------------
 app.post("/api/bill", async (req, res) => {
   try {
     const { mobile, items, total } = req.body;
 
-    if (!mobile || !items || items.length === 0) {
-      return res.status(400).json({ message: "Mobile and items required" });
+    if (!mobile || !/^[0-9]{10}$/.test(String(mobile))) {
+      return res.status(400).json({ message: "Valid 10 digit mobile required" });
+    }
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "Items required" });
     }
 
     await db.read();
 
     const invoice = {
       id: Date.now(), // invoiceId
-      mobile,
+      mobile: String(mobile),
       items,
       total: Number(total || 0),
       date: new Date().toISOString(),
@@ -137,14 +195,17 @@ app.post("/api/bill", async (req, res) => {
   }
 });
 
-// ✅ GET invoice by id
+// --------------------
+// ✅ GET BILL by invoiceId
+// FIX for: Cannot GET /api/bill/123
+// --------------------
 app.get("/api/bill/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
 
     await db.read();
 
-    const bill = db.data.bills.find(b => b.id === id);
+    const bill = (db.data.bills || []).find((x) => Number(x.id) === id);
 
     if (!bill) {
       return res.status(404).json({ message: "Invoice not found" });
@@ -152,32 +213,15 @@ app.get("/api/bill/:id", async (req, res) => {
 
     res.json(bill);
   } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-// ✅ Report by date (YYYY-MM-DD)
-app.get("/api/report", async (req, res) => {
-  try {
-    const { date } = req.query; // 2026-01-12
-
-    await db.read();
-    let bills = db.data.bills;
-
-    if (date) {
-      bills = bills.filter((b) => (b.date || "").startsWith(date));
-    }
-
-    const totalSales = bills.reduce((sum, b) => sum + Number(b.total || 0), 0);
-
-    res.json({ bills, totalSales });
-  } catch (err) {
-    console.log("REPORT ERROR:", err);
+    console.log("GET BILL ERROR:", err);
     res.status(500).json({ message: err.message });
   }
 });
 
-// --------- START SERVER ----------
-const PORT = process.env.PORT || 5000;
+// --------------------
+// ✅ Start Server (Render uses PORT)
+// --------------------
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log("✅ Backend running on port", PORT);
+  console.log("✅ Server running on port:", PORT);
 });
