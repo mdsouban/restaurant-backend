@@ -26,14 +26,26 @@ app.use(
   cors({
     origin: function (origin, callback) {
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error("Not allowed by CORS: " + origin));
+
+      const allowedOrigins = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "https://restaurant-frontend-five-snowy.vercel.app",
+      ];
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
   })
 );
 
-app.options("*", cors());
+// ✅ FIXED wildcard
+app.options("/*", cors());;
 
 // --------------------
 // ✅ PostgreSQL Connection
