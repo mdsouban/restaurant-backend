@@ -176,18 +176,22 @@ app.delete("/api/menu/:id", async (req, res) => {
 // ✅ CREATE BILL (returns invoiceId)
 // --------------------
 app.post("/api/bill", async (req, res) => {
-  try {
-    const { mobile, items, total } = req.body;
+  const { mobile, items, total } = req.body;
 
-    const billResult = await pool.query(
-      `INSERT INTO bills (mobile, total)
-       VALUES ($1, $2)
-       RETURNING id`,
+  if (!mobile || !items || items.length === 0) {
+    return res.status(400).json({ message: "Invalid bill data" });
+  }
+
+  try {
+    // 1️⃣ Insert bill
+    const billRes = await pool.query(
+      "INSERT INTO bills (mobile, total) VALUES ($1, $2) RETURNING id",
       [mobile, total]
     );
 
-    const billId = billResult.rows[0].id;
+    const billId = billRes.rows[0].id;
 
+    // 2️⃣ Insert items
     for (const item of items) {
       await pool.query(
         `INSERT INTO bill_items (bill_id, item_name, price, qty)
@@ -196,15 +200,14 @@ app.post("/api/bill", async (req, res) => {
       );
     }
 
-    res.json({
-      message: "Bill created",
-      invoiceId: billId,   // ✅ REAL ID
-    });
+    // 3️⃣ Return REAL invoice id
+    res.json({ invoiceId: billId });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to create bill" });
   }
-});
+});;
 
 // --------------------
 // ✅ GET BILL by invoiceId
@@ -213,24 +216,24 @@ app.get("/api/bill/:id", async (req, res) => {
   const id = Number(req.params.id);
 
   const bill = await pool.query(
-    `SELECT * FROM bills WHERE id=$1`,
+    "SELECT * FROM bills WHERE id=$1",
     [id]
   );
 
-  if (bill.rowCount === 0) {
+  if (bill.rows.length === 0) {
     return res.status(404).json({ message: "Invoice not found" });
   }
 
   const items = await pool.query(
-    `SELECT * FROM bill_items WHERE bill_id=$1`,
+    "SELECT item_name, price, qty FROM bill_items WHERE bill_id=$1",
     [id]
   );
 
   res.json({
     ...bill.rows[0],
-    items: items.rows,
+    items: items.rows
   });
-});
+});;
 // --------------------
 // ✅ Start Server
 // --------------------
