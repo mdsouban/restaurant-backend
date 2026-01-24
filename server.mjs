@@ -179,42 +179,30 @@ app.post("/api/bill", async (req, res) => {
   try {
     const { mobile, items, total } = req.body;
 
-    if (!mobile || !/^[0-9]{10}$/.test(String(mobile))) {
-      return res.status(400).json({ message: "Valid 10 digit mobile required" });
-    }
-
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "Items required" });
-    }
-
-    // create bill
     const billResult = await pool.query(
-      "INSERT INTO bills (mobile, total) VALUES ($1, $2) RETURNING *",
-      [String(mobile), Number(total || 0)]
+      `INSERT INTO bills (mobile, total)
+       VALUES ($1, $2)
+       RETURNING id`,
+      [mobile, total]
     );
 
-    const bill = billResult.rows[0];
+    const billId = billResult.rows[0].id;
 
-    // insert items
-    for (const it of items) {
+    for (const item of items) {
       await pool.query(
-        "INSERT INTO bill_items (bill_id, item_name, price, qty) VALUES ($1, $2, $3, $4)",
-        [
-          bill.id,
-          String(it.name || it.item_name || "Item"),
-          Number(it.price || 0),
-          Number(it.qty || 1),
-        ]
+        `INSERT INTO bill_items (bill_id, item_name, price, qty)
+         VALUES ($1, $2, $3, $4)`,
+        [billId, item.name, item.price, item.qty]
       );
     }
 
     res.json({
       message: "Bill created",
-      invoiceId: bill.id, // ✅ invoiceId = bill.id
+      invoiceId: billId,   // ✅ REAL ID
     });
   } catch (err) {
-    console.log("BILL ERROR:", err);
-    res.status(500).json({ message: err.message });
+    console.error(err);
+    res.status(500).json({ message: "Failed to create bill" });
   }
 });
 
@@ -222,29 +210,27 @@ app.post("/api/bill", async (req, res) => {
 // ✅ GET BILL by invoiceId
 // --------------------
 app.get("/api/bill/:id", async (req, res) => {
-  try {
-    const id = Number(req.params.id);
+  const id = Number(req.params.id);
 
-    const billResult = await pool.query("SELECT * FROM bills WHERE id=$1", [id]);
-    if (billResult.rows.length === 0) {
-      return res.status(404).json({ message: "Invoice not found" });
-    }
+  const bill = await pool.query(
+    `SELECT * FROM bills WHERE id=$1`,
+    [id]
+  );
 
-    const itemsResult = await pool.query(
-      "SELECT item_name AS name, price, qty FROM bill_items WHERE bill_id=$1",
-      [id]
-    );
-
-    const bill = billResult.rows[0];
-    bill.items = itemsResult.rows;
-
-    res.json(bill);
-  } catch (err) {
-    console.log("GET BILL ERROR:", err);
-    res.status(500).json({ message: err.message });
+  if (bill.rowCount === 0) {
+    return res.status(404).json({ message: "Invoice not found" });
   }
-});
 
+  const items = await pool.query(
+    `SELECT * FROM bill_items WHERE bill_id=$1`,
+    [id]
+  );
+
+  res.json({
+    ...bill.rows[0],
+    items: items.rows,
+  });
+});
 // --------------------
 // ✅ Start Server
 // --------------------
